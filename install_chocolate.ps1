@@ -18,7 +18,7 @@
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
 
-      http://www.apache.org/licenses/LICENSE-2.0
+      https://www.apache.org/licenses/LICENSE-2.0
 
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
@@ -329,6 +329,44 @@ function Test-ChocolateyInstalled {
     }
 }
 
+function Get-FileSHA256 {
+    <#
+    .SYNOPSIS
+    Returns the SHA256 hash of a file as an uppercase hex string.
+
+    .DESCRIPTION
+    Uses Get-FileHash when available (PowerShell 4+), otherwise falls back to
+    the .NET SHA256 managed class so the check works on PowerShell 2/3 as well.
+
+    .PARAMETER File
+    Path to the file to hash.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]
+        $File
+    )
+
+    if (-not (Test-Path $File)) {
+        throw "Cannot compute hash: file not found at '$File'."
+    }
+
+    if (Get-Command Get-FileHash -ErrorAction Ignore) {
+        return (Get-FileHash -Path $File -Algorithm SHA256).Hash.ToUpper()
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($File)
+        $hashBytes = $sha256.ComputeHash($bytes)
+        return ([BitConverter]::ToString($hashBytes) -replace '-', '').ToUpper()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
 function Install-7zip {
     [CmdletBinding()]
     param(
@@ -340,9 +378,19 @@ function Install-7zip {
         [hashtable]
         $ProxyConfiguration
     )
+
     if (-not (Test-Path ($Path))) {
         Write-Host "Downloading 7-Zip commandline tool prior to extraction."
         Request-File -Url 'https://community.chocolatey.org/7za.exe' -File $Path -ProxyConfiguration $ProxyConfiguration
+
+        # Verify the SHA256 hash of the freshly downloaded binary to guard
+        # against MITM and supply-chain tampering.
+        $expectedHash = '2A7548FBE3DF5432BDA14EA5A5CFDD64BD41B9B32AF3E2CD3B5FBA8FCE35D3A1'
+        $actualHash = Get-FileSHA256 -File $Path
+        if ($actualHash -ne $expectedHash) {
+            Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
+            throw "SHA256 hash mismatch for 7za.exe. Expected: $expectedHash, Actual: $actualHash. The file has been removed."
+        }
     }
     else {
         Write-Host "7zip already present, skipping installation."
